@@ -80,6 +80,8 @@ bun run build:all
 # Compilación minificada para producción
 bun run build:minify
 
+```
+
 ## Contribuir
 
 1. Haz un fork del repositorio
