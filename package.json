@@ -1,17 +1,33 @@
 {
-  "name": "neox",
+  "name": "neox-core",
   "module": "src/index.ts",
   "type": "module",
-  "private": true,
+  "version": "1.0.0",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "bun build ./src/index.ts --outdir ./dist --target node",
+    "build:minify": "bun build ./src/index.ts --outdir ./dist --target node --minify",
+    "build:types": "tsc --emitDeclarationOnly --outDir dist",
+    "build:all": "bun run build && bun run build:types"
+  },
   "devDependencies": {
     "@types/bun": "latest",
     "@types/fs-extra": "^11.0.4"
   },
-  "peerDependencies": {
-    "typescript": "^5"
-  },
   "dependencies": {
     "axios": "^1.9.0",
-    "fs-extra": "^11.3.0"
-  }
+    "fs-extra": "^11.3.0",
+    "typescript": "^5"
+  },
+  "keywords": [
+    "minecraft",
+    "downloader",
+    "launcher",
+    "typescript",
+    "bun"
+  ]
 }
