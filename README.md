@@ -1,6 +1,6 @@
 # Neox Minecraft Downloader
 
-Un potente y eficiente descargador de versiones de Minecraft construido con TypeScript y Bun.
+descargador de versiones de Minecraft construido con TypeScript y Bun.
 
 ## Características
 
