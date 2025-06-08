@@ -1,5 +1,5 @@
 {
-  "name": "neox-core",
+  "name": "@cubiclauncher/neox-core",
   "module": "src/index.ts",
   "type": "module",
   "version": "1.0.0",
