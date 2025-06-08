@@ -1,5 +1,7 @@
 # Neox Minecraft Downloader
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 descargador de versiones de Minecraft construido con TypeScript y Bun.
 
 ## Características
