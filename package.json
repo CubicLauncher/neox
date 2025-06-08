@@ -9,12 +9,10 @@
     "dist"
   ],
   "scripts": {
-    "build": "bun build ./src/index.ts --outdir ./dist --target node",
-    "build:minify": "bun build ./src/index.ts --outdir ./dist --target node --minify",
-    "build:types": "tsc --emitDeclarationOnly --outDir dist",
-    "build:all": "bun run build && bun run build:types"
+    "build": "swc src -d dist && tsc --emitDeclarationOnly --outDir dist/src"
   },
   "devDependencies": {
+    "@swc/cli": "^0.7.7",
     "@types/bun": "latest",
     "@types/fs-extra": "^11.0.4"
   },
