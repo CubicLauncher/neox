@@ -25,7 +25,7 @@ bun install
 ## Uso
 
 ```typescript
-import { MinecraftDownloader } from 'neox-core';
+import { MinecraftDownloader } from '@cubiclauncher/neox-core';
 
 const downloader = new MinecraftDownloader('./minecraft');
 
