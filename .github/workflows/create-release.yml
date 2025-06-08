@@ -1,0 +1,68 @@
+name: Build, publish package and create release
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      artifact-name: dist-artifact
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.14.0
+          registry-url: https://registry.npmjs.org/
+      - name: Install dependencies
+        run: yarn install
+      - name: Install missing build dependencies
+        run: yarn add --dev @swc/core
+      - name: Build project
+        run: yarn build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-artifact
+          path: dist
+
+  publish-npm:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-artifact
+          path: dist
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.14.0
+          registry-url: https://registry.npmjs.org/
+      - name: Install dependencies
+        run: yarn install
+      - name: Publicar en npm
+        run: yarn publish --access public --non-interactive
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_KEY }}
+
+  release:
+    needs: publish-npm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Get version from package.json
+        id: package_version
+        run: echo "version=$(jq -r .version package.json)" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: v${{ steps.package_version.outputs.version }}
+          release_name: v${{ steps.package_version.outputs.version }}
+          body: |
+            Nueva versión publicada automáticamente.
+            Cambios más recientes:
+            - ${{ github.event.head_commit.message }}
+          draft: false
+          prerelease: false
