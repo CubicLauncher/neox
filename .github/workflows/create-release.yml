@@ -9,16 +9,21 @@ jobs:
       artifact-name: dist-artifact
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22.14.0
           registry-url: https://registry.npmjs.org/
+
       - name: Install dependencies
         run: yarn install
+
       - name: Install missing build dependencies
         run: yarn add --dev @swc/core
+
       - name: Build project
         run: yarn build
+
       - uses: actions/upload-artifact@v4
         with:
           name: dist-artifact
@@ -29,6 +34,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Download artifact
         uses: actions/download-artifact@v4
         with:
@@ -42,7 +48,7 @@ jobs:
       - name: Create GitHub Release
         uses: actions/create-release@v1
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}  # 👈 Usa el token personal aquí
         with:
           tag_name: v${{ steps.package_version.outputs.version }}
           release_name: v${{ steps.package_version.outputs.version }}
