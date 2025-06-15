@@ -94,4 +94,4 @@ bun run build:minify
 
 ## Licencia
 
-Este proyecto está licenciado bajo la Licencia MIT - ver el archivo [LICENSE](LICENSE) para más detalles.
+Este proyecto está licenciado bajo la Licencia LGPL-2.1 license - ver el archivo [LICENSE](LICENSE) para más detalles.
