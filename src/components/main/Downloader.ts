@@ -1,8 +1,9 @@
-import axios, { AxiosProgressEvent } from 'axios';
+import axios, { AxiosProgressEvent, AxiosResponse } from 'axios';
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { EventEmitter } from 'events';
 import { DownloadOptions, MinecraftVersion, VersionManifest, MinecraftLibrary } from '../others/types';
+import { createHash } from 'crypto';
 
 interface DownloadProgress {
   version: string;
@@ -10,6 +11,9 @@ interface DownloadProgress {
   type: 'client' | 'library' | 'asset' | 'native';
   currentFile?: string;
   totalFiles?: number;
+  downloadedFiles?: number;
+  totalSize?: number;
+  downloadedSize?: number;
 }
 
 type DownloadEvents = {
@@ -17,11 +21,21 @@ type DownloadEvents = {
   'status': (message: string) => void;
   'error': (error: Error) => void;
   'complete': (version: string) => void;
+  'file-complete': (filename: string, type: string) => void;
+}
+
+interface DownloadTask {
+  url: string;
+  destination: string;
+  type: DownloadProgress['type'];
+  filename: string;
+  expectedHash?: string;
+  size?: number;
 }
 
 /**
  * MinecraftDownloader class handles downloading Minecraft game files including the client,
- * libraries, assets and native dependencies.
+ * libraries, assets and native dependencies with optimized concurrent downloads.
  * 
  * @example
  * ```typescript
@@ -43,6 +57,14 @@ type DownloadEvents = {
 export class MinecraftDownloader extends EventEmitter {
   private readonly MANIFEST_URL = 'https://launchermeta.mojang.com/mc/game/version_manifest_v2.json';
   private readonly RESOURCES_URL = 'https://resources.download.minecraft.net';
+  private MAX_CONCURRENT_DOWNLOADS = 10;
+  private readonly CHUNK_SIZE = 1024 * 1024; // 1MB chunks
+  private readonly RETRY_ATTEMPTS = 3;
+  private readonly RETRY_DELAY = 1000; // 1 second
+
+  private manifestCache: VersionManifest | null = null;
+  private manifestCacheTime = 0;
+  private readonly MANIFEST_CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
 
   constructor(private baseDir: string) {
     super();
@@ -50,47 +72,173 @@ export class MinecraftDownloader extends EventEmitter {
   }
 
   /**
-   * Downloads a file from a URL to a destination path with progress tracking
+   * Calculates SHA1 hash of a file
    */
-  private async downloadFile(url: string, destination: string, version: string, fileType: DownloadProgress['type']): Promise<void> {
-    const response = await axios({
-      url,
-      method: 'GET',
-      responseType: 'stream',
-      onDownloadProgress: (progressEvent: AxiosProgressEvent) => {
-        if (progressEvent.total) {
-          const percent = Math.round((progressEvent.loaded / progressEvent.total) * 100);
-          this.emit('progress', { 
-            version, 
-            percent,
-            type: fileType,
-            currentFile: path.basename(destination)
-          });
-        }
-      }
-    });
-
-    const writer = fs.createWriteStream(destination);
-    response.data.pipe(writer);
-
+  private async calculateFileHash(filePath: string): Promise<string> {
     return new Promise((resolve, reject) => {
-      writer.on('finish', resolve);
-      writer.on('error', reject);
+      const hash = createHash('sha1');
+      const stream = fs.createReadStream(filePath);
+      
+      stream.on('data', (data) => hash.update(data));
+      stream.on('end', () => resolve(hash.digest('hex')));
+      stream.on('error', reject);
     });
   }
 
   /**
-   * Gets the version manifest containing all available Minecraft versions
-   * @returns Promise<VersionManifest>
+   * Checks if a file exists and has the correct hash
+   */
+  private async isFileValid(filePath: string, expectedHash?: string): Promise<boolean> {
+    try {
+      if (!fs.existsSync(filePath)) {
+        return false;
+      }
+
+      if (expectedHash) {
+        const actualHash = await this.calculateFileHash(filePath);
+        return actualHash === expectedHash;
+      }
+
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Downloads a file with retry logic and progress tracking
+   */
+  private async downloadFile(task: DownloadTask, version: string): Promise<void> {
+    const { url, destination, type, filename, expectedHash, size } = task;
+
+    // Check if file already exists and is valid
+    if (await this.isFileValid(destination, expectedHash)) {
+      this.emit('file-complete', filename, type);
+      return;
+    }
+
+    // Ensure directory exists
+    fs.ensureDirSync(path.dirname(destination));
+
+    let lastAttempt = 0;
+    while (lastAttempt < this.RETRY_ATTEMPTS) {
+      try {
+        const response = await axios({
+          url,
+          method: 'GET',
+          responseType: 'stream',
+          timeout: 30000, // 30 second timeout
+          onDownloadProgress: (progressEvent: AxiosProgressEvent) => {
+            if (progressEvent.total) {
+              const percent = Math.round((progressEvent.loaded / progressEvent.total) * 100);
+              this.emit('progress', { 
+                version, 
+                percent,
+                type,
+                currentFile: filename,
+                downloadedSize: progressEvent.loaded,
+                totalSize: progressEvent.total
+              });
+            }
+          }
+        });
+
+        const writer = fs.createWriteStream(destination);
+        response.data.pipe(writer);
+
+        await new Promise<void>((resolve, reject) => {
+          writer.on('finish', () => resolve());
+          writer.on('error', reject);
+          response.data.on('error', reject);
+        });
+
+        // Verify hash if provided
+        if (expectedHash) {
+          const actualHash = await this.calculateFileHash(destination);
+          if (actualHash !== expectedHash) {
+            throw new Error(`Hash mismatch for ${filename}`);
+          }
+        }
+
+        this.emit('file-complete', filename, type);
+        return;
+      } catch (error) {
+        lastAttempt++;
+        if (lastAttempt >= this.RETRY_ATTEMPTS) {
+          throw new Error(`Failed to download ${filename} after ${this.RETRY_ATTEMPTS} attempts: ${error}`);
+        }
+        
+        // Clean up partial download
+        if (fs.existsSync(destination)) {
+          fs.unlinkSync(destination);
+        }
+        
+        // Wait before retry
+        await new Promise(resolve => setTimeout(resolve, this.RETRY_DELAY * lastAttempt));
+      }
+    }
+  }
+
+  /**
+   * Downloads multiple files concurrently with controlled concurrency
+   */
+  private async downloadFilesConcurrently(tasks: DownloadTask[], version: string): Promise<void> {
+    const semaphore = new Array(this.MAX_CONCURRENT_DOWNLOADS).fill(null);
+    let completedTasks = 0;
+    const totalTasks = tasks.length;
+
+    const downloadWithSemaphore = async (task: DownloadTask): Promise<void> => {
+      const semaphoreIndex = semaphore.findIndex(s => s === null);
+      semaphore[semaphoreIndex] = task;
+
+      try {
+        await this.downloadFile(task, version);
+      } finally {
+        semaphore[semaphoreIndex] = null;
+        completedTasks++;
+        
+        // Emit overall progress
+        const percent = Math.round((completedTasks / totalTasks) * 100);
+        this.emit('progress', {
+          version,
+          percent,
+          type: task.type,
+          downloadedFiles: completedTasks,
+          totalFiles: totalTasks
+        });
+      }
+    };
+
+    // Process tasks in batches
+    const batches = [];
+    for (let i = 0; i < tasks.length; i += this.MAX_CONCURRENT_DOWNLOADS) {
+      batches.push(tasks.slice(i, i + this.MAX_CONCURRENT_DOWNLOADS));
+    }
+
+    for (const batch of batches) {
+      await Promise.all(batch.map(downloadWithSemaphore));
+    }
+  }
+
+  /**
+   * Gets the version manifest with caching
    */
   public async getVersionManifest(): Promise<VersionManifest> {
+    const now = Date.now();
+    
+    // Return cached manifest if still valid
+    if (this.manifestCache && (now - this.manifestCacheTime) < this.MANIFEST_CACHE_DURATION) {
+      return this.manifestCache;
+    }
+
     const response = await axios.get<VersionManifest>(this.MANIFEST_URL);
+    this.manifestCache = response.data;
+    this.manifestCacheTime = now;
     return response.data;
   }
 
   /**
    * Gets detailed information about a specific Minecraft version
-   * @param version - The Minecraft version to get info for (e.g. '1.19.2')
    */
   private async getVersionInfo(version: string): Promise<MinecraftVersion> {
     const manifest = await this.getVersionManifest();
@@ -106,7 +254,6 @@ export class MinecraftDownloader extends EventEmitter {
 
   /**
    * Gets a list of all available Minecraft versions
-   * @returns Promise<string[]> Array of version strings
    */
   public async getAvailableVersions(): Promise<string[]> {
     const manifest = await this.getVersionManifest();
@@ -115,7 +262,6 @@ export class MinecraftDownloader extends EventEmitter {
 
   /**
    * Gets the latest release version of Minecraft
-   * @returns Promise<string> Latest release version
    */
   public async getLatestRelease(): Promise<string> {
     const manifest = await this.getVersionManifest();
@@ -124,7 +270,6 @@ export class MinecraftDownloader extends EventEmitter {
 
   /**
    * Gets the latest snapshot version of Minecraft
-   * @returns Promise<string> Latest snapshot version
    */
   public async getLatestSnapshot(): Promise<string> {
     const manifest = await this.getVersionManifest();
@@ -133,7 +278,6 @@ export class MinecraftDownloader extends EventEmitter {
 
   /**
    * Downloads a specific version of Minecraft with all its dependencies
-   * @param version - The Minecraft version to download (e.g. '1.19.2')
    */
   public async download(version: string): Promise<void> {
     try {
@@ -144,29 +288,39 @@ export class MinecraftDownloader extends EventEmitter {
       fs.ensureDirSync(versionDir);
 
       // Save version JSON
-      this.emit('status', 'Downloading version manifest');
+      this.emit('status', 'Saving version manifest');
       await fs.writeJson(path.join(versionDir, `${version}.json`), versionInfo, { spaces: 2 });
 
-      // Download client jar
-      this.emit('status', 'Downloading client JAR');
-      await this.downloadFile(
-        versionInfo.downloads.client.url,
-        path.join(versionDir, `${version}.jar`),
-        version,
-        'client'
-      );
+      // Prepare all download tasks
+      const downloadTasks: DownloadTask[] = [];
 
-      // Download libraries
-      this.emit('status', 'Downloading libraries');
-      await this.downloadLibraries(versionInfo.libraries, version);
+      // Client JAR
+      downloadTasks.push({
+        url: versionInfo.downloads.client.url,
+        destination: path.join(versionDir, `${version}.jar`),
+        type: 'client',
+        filename: `${version}.jar`,
+        expectedHash: versionInfo.downloads.client.sha1,
+        size: versionInfo.downloads.client.size
+      });
 
-      // Download assets
+      // Libraries
+      this.emit('status', 'Preparing library downloads');
+      const libraryTasks = this.prepareLibraryTasks(versionInfo.libraries, version);
+      downloadTasks.push(...libraryTasks);
+
+      // Assets
       if (versionInfo.assetIndex) {
-        this.emit('status', 'Downloading game assets');
-        await this.downloadAssets(versionInfo.assetIndex, version);
+        this.emit('status', 'Preparing asset downloads');
+        const assetTasks = await this.prepareAssetTasks(versionInfo.assetIndex, version);
+        downloadTasks.push(...assetTasks);
       }
 
-      this.emit('status', 'Download completed');
+      // Download all files concurrently
+      this.emit('status', `Starting download of ${downloadTasks.length} files`);
+      await this.downloadFilesConcurrently(downloadTasks, version);
+
+      this.emit('status', 'Download completed successfully');
       this.emit('complete', version);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -175,45 +329,55 @@ export class MinecraftDownloader extends EventEmitter {
     }
   }
 
-  private async downloadLibraries(libraries: any[], version: string): Promise<void> {
+  /**
+   * Prepares download tasks for libraries
+   */
+  private prepareLibraryTasks(libraries: any[], version: string): DownloadTask[] {
+    const tasks: DownloadTask[] = [];
     const librariesDir = path.join(this.baseDir, 'libraries');
-    fs.ensureDirSync(librariesDir);
 
     for (const library of libraries) {
+      // Main artifact
       if (library.downloads.artifact) {
         const artifactPath = path.join(librariesDir, library.downloads.artifact.path);
-        fs.ensureDirSync(path.dirname(artifactPath));
-        
-        this.emit('status', `Downloading library: ${library.name}`);
-        await this.downloadFile(
-          library.downloads.artifact.url,
-          artifactPath,
-          version,
-          'library'
-        );
+        tasks.push({
+          url: library.downloads.artifact.url,
+          destination: artifactPath,
+          type: 'library',
+          filename: path.basename(library.downloads.artifact.path),
+          expectedHash: library.downloads.artifact.sha1,
+          size: library.downloads.artifact.size
+        });
       }
 
+      // Native libraries
       if (library.downloads.classifiers) {
         const nativesDir = path.join(this.baseDir, 'natives');
-        fs.ensureDirSync(nativesDir);
         
         for (const [classifier, native] of Object.entries(library.downloads.classifiers)) {
           if (classifier.includes('natives')) {
             const nativePath = path.join(nativesDir, path.basename((native as any).path));
-            this.emit('status', `Downloading native: ${library.name} (${classifier})`);
-            await this.downloadFile(
-              (native as any).url,
-              nativePath,
-              version,
-              'native'
-            );
+            tasks.push({
+              url: (native as any).url,
+              destination: nativePath,
+              type: 'native',
+              filename: path.basename((native as any).path),
+              expectedHash: (native as any).sha1,
+              size: (native as any).size
+            });
           }
         }
       }
     }
+
+    return tasks;
   }
 
-  private async downloadAssets(assetIndex: any, version: string): Promise<void> {
+  /**
+   * Prepares download tasks for assets
+   */
+  private async prepareAssetTasks(assetIndex: any, version: string): Promise<DownloadTask[]> {
+    const tasks: DownloadTask[] = [];
     const assetsDir = path.join(this.baseDir, 'assets');
     const indexesDir = path.join(assetsDir, 'indexes');
     const objectsDir = path.join(assetsDir, 'objects');
@@ -230,36 +394,38 @@ export class MinecraftDownloader extends EventEmitter {
       { spaces: 2 }
     );
 
-    // Download assets
+    // Prepare asset download tasks
     const assets = indexResponse.data.objects;
-    let downloadedAssets = 0;
-    const totalAssets = Object.keys(assets).length;
-
     for (const [assetName, asset] of Object.entries(assets)) {
       const hash = (asset as any).hash;
       const prefix = hash.substring(0, 2);
       const assetPath = path.join(objectsDir, prefix, hash);
 
-      if (!fs.existsSync(assetPath)) {
-        fs.ensureDirSync(path.dirname(assetPath));
-        this.emit('status', `Downloading asset: ${assetName}`);
-        await this.downloadFile(
-          `${this.RESOURCES_URL}/${prefix}/${hash}`,
-          assetPath,
-          version,
-          'asset'
-        );
-      }
-
-      downloadedAssets++;
-      const percent = Math.round((downloadedAssets / totalAssets) * 100);
-      this.emit('progress', { 
-        version, 
-        percent,
+      tasks.push({
+        url: `${this.RESOURCES_URL}/${prefix}/${hash}`,
+        destination: assetPath,
         type: 'asset',
-        currentFile: assetName,
-        totalFiles: totalAssets
+        filename: assetName,
+        expectedHash: hash,
+        size: (asset as any).size
       });
     }
+
+    return tasks;
+  }
+
+  /**
+   * Clears the manifest cache
+   */
+  public clearCache(): void {
+    this.manifestCache = null;
+    this.manifestCacheTime = 0;
+  }
+
+  /**
+   * Sets the maximum number of concurrent downloads
+   */
+  public setMaxConcurrentDownloads(max: number): void {
+    this.MAX_CONCURRENT_DOWNLOADS = Math.max(1, Math.min(max, 50));
   }
 } 

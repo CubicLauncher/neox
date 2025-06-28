@@ -9,12 +9,18 @@
     "dist"
   ],
   "scripts": {
-    "build": "swc src -d dist && tsc --emitDeclarationOnly --outDir dist/src"
+    "build": "swc src -d dist && tsc --emitDeclarationOnly --outDir dist/src",
+    "test": "ts-node src/test/dowload.ts",
+    "test:improved": "ts-node src/test/improved-download.ts",
+    "dev": "ts-node src/test/dowload.ts",
+    "start": "node dist/index.js"
   },
   "devDependencies": {
     "@swc/cli": "^0.7.7",
     "@types/bun": "latest",
-    "@types/fs-extra": "^11.0.4"
+    "@types/fs-extra": "^11.0.4",
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.9.0"
   },
   "dependencies": {
     "axios": "^1.9.0",
@@ -26,6 +32,10 @@
     "downloader",
     "launcher",
     "typescript",
-    "bun"
-  ]
+    "bun",
+    "concurrent",
+    "optimized",
+    "fast"
+  ],
+  "description": "Minecraft downloader optimizado con descargas concurrentes, verificación de archivos y caché inteligente"
 }
