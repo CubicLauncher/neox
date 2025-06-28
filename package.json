@@ -2,7 +2,7 @@
   "name": "@cubiclauncher/neox-core",
   "module": "src/index.ts",
   "type": "module",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
