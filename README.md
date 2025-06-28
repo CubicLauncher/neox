@@ -173,4 +173,4 @@ minecraft/
 
 ## 📄 Licencia
 
-MIT License - ver [LICENSE](LICENSE) para detalles.
+LGPL-2.1 license  - ver [LICENSE](LICENSE) para detalles.
